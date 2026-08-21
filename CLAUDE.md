@@ -109,6 +109,21 @@ v0 の成功条件は 「判定率が 高いこと」 ではない。 **判定�
 
 ---
 
+# v0.2 事前対策 (LeanBackend 実装前に 必須読み込み)
+
+**LeanBackend stub を 実 Lean 4 backend に 差し替える前に**、 [`docs/V02_PROTOCOL.md`](./docs/V02_PROTOCOL.md) を **必ず** 読むこと。 5 protocol (A1 sandbox / A2 spawn error / A3 process tree kill / B4 --json axiom parse / C7 REPL server + D11 ERR_UNCLASSIFIED) の 事前対策を skip すると:
+
+- A1 skip → 生徒 input による 任意コード実行 (`#eval IO.Process.run` で shell)
+- A2 skip → `lean` 不在時 永久ハング (spec §7 直接違反)
+- A3 skip → `lean` 孤児プロセス メモリリーク
+- B4 skip → 公理検査 事実上無効化 (`#print axioms` output が JSON message 内で 未 parse)
+- C7 skip → `import Mathlib.Tactic` cold start 8-15 秒 → 全 request TIMEOUT → 台帳 「TIMEOUT ばかり」 で spec §4 signal 崩壊
+- D11 skip → 分類器 網羅性不足 の silent 化 (原典 §4 「推測で 機能を 足さない」 の 信号腐敗)
+
+**source**: rei-aios `data/external-prior-art/gemini-lean-verify-2026-08-22/chat_claude_critique_2026-08-22.md` (STEP 1366 archival)、 Gemini `lean-verify` TypeScript impl への chat-Claude critique から Python 移植 + 私 rei-checker-mcp 適用 protocol 化。
+
+---
+
 # Phase 2 以降 (v0 完了までは 着手しない)
 
 以下は 将来の 設計方針で、 **v0 のスコープ外**。 `decision_rate` が 算出できる 状態に なるまで、 このセクションの 実装に 着手しない。 但し v0 の 設計時に、 ここへの 拡張余地だけは 潰さない。
