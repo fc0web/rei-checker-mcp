@@ -1,0 +1,22 @@
+# Force LF line endings for all text files on all platforms.
+# rei-aios STEP 1363 precedent: prevents CRLF drift on cross-platform commits.
+* text=auto eol=lf
+
+# Explicit text files (safety net).
+*.py text eol=lf
+*.md text eol=lf
+*.toml text eol=lf
+*.txt text eol=lf
+*.json text eol=lf
+*.jsonl text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+.gitignore text eol=lf
+.gitattributes text eol=lf
+LICENSE text eol=lf
+
+# Binary safety (in case we add fixtures later).
+*.png binary
+*.jpg binary
+*.gif binary
+*.pdf binary
