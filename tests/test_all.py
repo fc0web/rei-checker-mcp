@@ -71,11 +71,14 @@ class TestSchema(unittest.TestCase):
         self.assertEqual(Verdict.INVALID.value, "INVALID")
         self.assertEqual(Verdict.UNDECIDED.value, "UNDECIDED")
 
-    def test_reason_code_has_six_initial_values(self):
-        # Spec §1.2 initial set.
+    def test_reason_code_has_seven_values(self):
+        # Spec §1.2 initial set + §6 D11 (V02_PROTOCOL.md, v0.2) widen with
+        # UNCLASSIFIED. Enum widening is forward-compatible — existing
+        # ledger rows with old 6-code set remain valid.
         expected = {
             "TIMEOUT", "PARSE_FAILURE", "UNSUPPORTED_SYNTAX",
             "MISSING_AXIOM", "DEPTH_LIMIT", "OUT_OF_SCOPE",
+            "UNCLASSIFIED",
         }
         self.assertEqual(
             {r.value for r in ReasonCode},
@@ -579,6 +582,211 @@ class TestScopeDiscipline(unittest.TestCase):
         # Empty required list or absent — either is fine.
         required = tool["inputSchema"].get("required", [])
         self.assertEqual(required, [])
+
+
+# -------------------------------------------------------------------------
+# V0.2 protocol tests (V02_PROTOCOL.md §2, §3, §4, §6).
+# §1 is environment-level (sandbox), not code-testable from inside the
+# sandbox. §5 REPL server has its own harness in lean_backend/ (STEP 1367).
+# -------------------------------------------------------------------------
+
+
+class TestAxiomParser(unittest.TestCase):
+    """V02_PROTOCOL.md §4 (B4): parse #print axioms from Lean --json stdout."""
+
+    def _parse(self, stdout):
+        from rei_checker.axiom_parser import parse_axioms_from_lean_json_output
+        return parse_axioms_from_lean_json_output(stdout)
+
+    def test_empty_stdout_returns_no_diagnostic(self):
+        r = self._parse("")
+        self.assertEqual(r.axioms, [])
+        self.assertFalse(r.has_sorry_ax)
+        self.assertFalse(r.saw_axiom_diagnostic)
+
+    def test_extracts_axioms_from_depends_on_marker(self):
+        # Canonical post-v4.5 shape.
+        stdout = (
+            '{"severity":"information","pos":{"line":1,"column":0},'
+            '"data":"\'foo\' depends on axioms: [propext, Classical.choice]"}'
+        )
+        r = self._parse(stdout)
+        self.assertEqual(r.axioms, ["propext", "Classical.choice"])
+        self.assertFalse(r.has_sorry_ax)
+        self.assertTrue(r.saw_axiom_diagnostic)
+
+    def test_extracts_axioms_from_uses_axioms_marker(self):
+        # Pre-v4.5 shape variant.
+        stdout = (
+            '{"severity":"information",'
+            '"data":"\'bar\' uses axioms: [Quot.sound]"}'
+        )
+        r = self._parse(stdout)
+        self.assertEqual(r.axioms, ["Quot.sound"])
+        self.assertTrue(r.saw_axiom_diagnostic)
+
+    def test_detects_sorry_ax(self):
+        stdout = (
+            '{"severity":"information",'
+            '"data":"\'baz\' depends on axioms: [sorryAx, propext]"}'
+        )
+        r = self._parse(stdout)
+        self.assertTrue(r.has_sorry_ax)
+        self.assertIn("sorryAx", r.axioms)
+        self.assertIn("propext", r.axioms)
+
+    def test_message_field_fallback_when_no_data(self):
+        # Older Lean JSON put text under `message` not `data`.
+        stdout = (
+            '{"severity":"info",'
+            '"message":"\'q\' depends on axioms: [ax1]"}'
+        )
+        r = self._parse(stdout)
+        self.assertEqual(r.axioms, ["ax1"])
+        self.assertTrue(r.saw_axiom_diagnostic)
+
+    def test_structured_message_dict_flattened_via_json_dump(self):
+        # Lean sometimes wraps message as MessageData tree (dict).
+        stdout = (
+            '{"severity":"info",'
+            '"data":{"tag":"appendField","content":"depends on axioms: [x]"}}'
+        )
+        r = self._parse(stdout)
+        # After json.dumps flattening the "depends on axioms: [x]" substring
+        # is still findable.
+        self.assertTrue(r.saw_axiom_diagnostic)
+        self.assertIn("x", r.axioms)
+
+    def test_malformed_json_line_skipped_silently(self):
+        stdout = (
+            "Compiling ...\n"  # non-JSON line, must skip
+            "{not json}\n"     # malformed JSON, must skip
+            '{"severity":"info","data":"\'y\' depends on axioms: [ax1]"}'
+        )
+        r = self._parse(stdout)
+        self.assertEqual(r.axioms, ["ax1"])
+
+    def test_mismatched_bracket_skipped_no_partial_return(self):
+        # Missing closing bracket → occurrence skipped entirely, no partial.
+        stdout = (
+            '{"severity":"info","data":"depends on axioms: [ax1, ax2"}'
+        )
+        r = self._parse(stdout)
+        self.assertTrue(r.saw_axiom_diagnostic)
+        self.assertEqual(r.axioms, [])  # nothing extracted
+
+    def test_multiple_diagnostics_accumulate(self):
+        stdout = (
+            '{"severity":"info","data":"\'a\' depends on axioms: [x, y]"}\n'
+            '{"severity":"info","data":"\'b\' depends on axioms: [z]"}'
+        )
+        r = self._parse(stdout)
+        self.assertEqual(r.axioms, ["x", "y", "z"])
+
+    def test_all_axioms_authorized_vacuous_true_but_flagged(self):
+        # V02_PROTOCOL.md §4 threat: empty list returns True vacuously.
+        # This is set-theoretically correct — the fix is that callers must
+        # check saw_axiom_diagnostic BEFORE trusting the vacuous True.
+        from rei_checker.axiom_parser import all_axioms_authorized
+        self.assertTrue(all_axioms_authorized([], ["propext"]))
+        self.assertTrue(all_axioms_authorized(["propext"], ["propext"]))
+        self.assertFalse(
+            all_axioms_authorized(["Classical.choice"], ["propext"])
+        )
+
+
+class TestSubprocessUtil(unittest.TestCase):
+    """V02_PROTOCOL.md §2 (A2 spawn error) + §3 (A3 process tree kill)."""
+
+    def test_binary_not_found_folds_to_error_tuple(self):
+        from rei_checker.subprocess_util import _run_lean_safely
+        rc, out, err, timed_out = _run_lean_safely(
+            args=["nonexistent_binary_xyz_9999"],
+            stdin_data="",
+            timeout_ms=1000,
+        )
+        self.assertEqual(rc, -1)
+        self.assertEqual(out, "")
+        self.assertIn("binary not found", err)
+        self.assertFalse(timed_out)
+
+    def test_normal_exit_zero_stdout_captured(self):
+        import sys as _sys
+        from rei_checker.subprocess_util import _run_lean_safely
+        rc, out, err, timed_out = _run_lean_safely(
+            args=[_sys.executable, "-c", "print('hello')"],
+            stdin_data="",
+            timeout_ms=5000,
+        )
+        self.assertEqual(rc, 0)
+        self.assertIn("hello", out)
+        self.assertFalse(timed_out)
+
+    def test_timeout_kills_and_returns_timed_out_true(self):
+        import sys as _sys
+        from rei_checker.subprocess_util import _run_lean_safely
+        # Sleep for 30 seconds; timeout at 500ms.
+        rc, out, err, timed_out = _run_lean_safely(
+            args=[_sys.executable, "-c", "import time; time.sleep(30)"],
+            stdin_data="",
+            timeout_ms=500,
+        )
+        self.assertEqual(rc, -1)
+        self.assertTrue(timed_out)
+
+    def test_stdin_delivered_to_child(self):
+        import sys as _sys
+        from rei_checker.subprocess_util import _run_lean_safely
+        rc, out, err, timed_out = _run_lean_safely(
+            args=[_sys.executable, "-c", "import sys; print(sys.stdin.read().upper())"],
+            stdin_data="ping",
+            timeout_ms=5000,
+        )
+        self.assertEqual(rc, 0)
+        self.assertIn("PING", out)
+
+    def test_kill_process_tree_noop_on_dead_pid(self):
+        # PID 0 / 1 / 2 are system pids; passing something guaranteed-dead is
+        # tricky cross-platform. Use a real short-lived process and then
+        # try to kill after it's already exited — must not raise.
+        import sys as _sys
+        import subprocess as _sp
+        from rei_checker.subprocess_util import _kill_process_tree
+        p = _sp.Popen(
+            [_sys.executable, "-c", "pass"],
+            stdout=_sp.PIPE,
+            stderr=_sp.PIPE,
+        )
+        p.wait(timeout=5)
+        # p.pid is now dead. Must not raise.
+        _kill_process_tree(p.pid)  # succeeds silently
+
+
+class TestReasonCodeUnclassified(unittest.TestCase):
+    """V02_PROTOCOL.md §6 (D11): UNCLASSIFIED enum value + invariant."""
+
+    def test_unclassified_is_a_valid_reason_code(self):
+        self.assertEqual(ReasonCode.UNCLASSIFIED.value, "UNCLASSIFIED")
+
+    def test_unclassified_paired_with_undecided_verdict_ok(self):
+        r = VerifyResult(
+            verdict=Verdict.UNDECIDED,
+            elapsed_ms=1,
+            checker_version="test",
+            reason_code=ReasonCode.UNCLASSIFIED,
+            detail="some raw diagnostic",
+        )
+        self.assertEqual(r.reason_code, ReasonCode.UNCLASSIFIED)
+        self.assertEqual(r.detail, "some raw diagnostic")
+
+    def test_unclassified_forbidden_with_valid_verdict(self):
+        with self.assertRaises(ValueError):
+            VerifyResult(
+                verdict=Verdict.VALID,
+                elapsed_ms=1,
+                checker_version="test",
+                reason_code=ReasonCode.UNCLASSIFIED,
+            )
 
 
 if __name__ == "__main__":

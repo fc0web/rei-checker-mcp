@@ -41,6 +41,12 @@ class ReasonCode(str, Enum):
     MISSING_AXIOM = "MISSING_AXIOM"
     DEPTH_LIMIT = "DEPTH_LIMIT"
     OUT_OF_SCOPE = "OUT_OF_SCOPE"
+    # §6 D11 (V02_PROTOCOL.md): silent-misclassification prevention.
+    # Return this when Lean output does not match any known error pattern,
+    # with the raw diagnostic in `detail`. When ledger shows rising
+    # UNCLASSIFIED frequency, the fix is to read accumulated details and
+    # add new rules to classifyFailure — never assume default is correct.
+    UNCLASSIFIED = "UNCLASSIFIED"
 
 
 @dataclass(frozen=True)

@@ -307,9 +307,30 @@ protocol counts as "implemented":
 - rei-aios `data/external-prior-art/checker-spec-v0-2026-08-22/` — the
   original CHECKER_SPEC_v0.md source
 
+## Implementation status (2026-08-22, v0.2.0a1)
+
+Landed as isolated, testable utility modules — NOT yet wired into a real
+running LeanBackend. LeanBackend real impl (Stage 2 of §5) will consume
+these utilities as-is:
+
+| Protocol | Status | Location | Tests |
+|---|---|---|---|
+| §1 A1 Sandbox | doc only (env-level, not code) | this file | n/a |
+| §2 A2 spawn error | **landed** | `rei_checker/subprocess_util.py` `_run_lean_safely` | `TestSubprocessUtil` (4 cases) |
+| §3 A3 process tree kill | **landed** | `rei_checker/subprocess_util.py` `_kill_process_tree` | `TestSubprocessUtil` (1 case, cross-platform) |
+| §4 B4 axiom JSON parse | **landed** | `rei_checker/axiom_parser.py` | `TestAxiomParser` (10 cases with fixtures) |
+| §5 C7 REPL server | Stage 1 plumbing done | `lean_backend/` (STEP 1367) | 13 smoke pass (Stage 1) |
+| §6 D11 UNCLASSIFIED | **landed** | `rei_checker/schema.py::ReasonCode.UNCLASSIFIED` | `TestReasonCodeUnclassified` (3 cases) + updated `test_reason_code_has_seven_values` |
+
+Total v0.2 tests: 18 new (73/73 pass on 2026-08-22). Real LeanBackend
+wiring is a separate STEP.
+
 ## Version
 
 - v1.0 (2026-08-22) — initial extraction from chat-Claude critique of
   Gemini's `lean-verify` TypeScript implementation. Author: Claude Code
   (rei-aios STEP 1366). No implementation code changed — this is a
   prep/planning document only.
+- v1.1 (2026-08-22) — implementation-status table added after v0.2.0a1
+  landed §2/§3/§4/§6 utility modules (rei-aios STEP 1370, Arc 3). §1
+  still doc-only, §5 still Stage 1 plumbing.
