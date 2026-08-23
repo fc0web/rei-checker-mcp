@@ -99,6 +99,11 @@ class StatsResult:
 
     `decision_rate = (valid + invalid) / total` — the SOLE metric of
     project success. Spec §3.
+
+    v0.3 addition: optional `d_fumt8_breakdown` field, populated only when
+    stats() is called with `include_d_fumt8=True`. Spec §1.3 preserved:
+    default off, ledger-only annotation is the primary surface. When
+    absent, `to_dict()` omits the field (backward compat).
     """
 
     total: int
@@ -107,6 +112,7 @@ class StatsResult:
     undecided: int
     decision_rate: float
     reason_breakdown: Dict[str, int] = field(default_factory=dict)
+    d_fumt8_breakdown: Optional[Dict[str, int]] = None  # v0.3 opt-in
 
     def __post_init__(self) -> None:
         if self.total != self.valid + self.invalid + self.undecided:
@@ -125,7 +131,7 @@ class StatsResult:
                 )
 
     def to_dict(self) -> Dict[str, Any]:
-        return {
+        d: Dict[str, Any] = {
             "total": self.total,
             "valid": self.valid,
             "invalid": self.invalid,
@@ -133,6 +139,9 @@ class StatsResult:
             "decision_rate": self.decision_rate,
             "reason_breakdown": dict(self.reason_breakdown),
         }
+        if self.d_fumt8_breakdown is not None:
+            d["d_fumt8_breakdown"] = dict(self.d_fumt8_breakdown)
+        return d
 
 
 @dataclass(frozen=True)
@@ -142,6 +151,12 @@ class LedgerEntry:
     Append-only. No PII, no user identifier. The `expression_normalized`
     field is what the ledger stores — call sites are responsible for
     normalization before append.
+
+    v0.3 addition: optional `d_fumt8` field stores the D-FUMT₈ projection
+    (name only, e.g. "NEITHER") for downstream analysis. Spec §1.3 is
+    preserved: this field is ledger-only, NOT exposed in VerifyResult /
+    stats() decision_rate. See rei_checker/d_fumt8.py for the mapping.
+    Old ledger rows without this field remain readable (backward compat).
     """
 
     ts_utc: str  # ISO 8601 UTC, e.g. "2026-08-22T10:15:30Z"
@@ -150,12 +165,14 @@ class LedgerEntry:
     checker_version: str
     elapsed_ms: int
     reason_code: Optional[ReasonCode] = None
+    d_fumt8: Optional[str] = None  # v0.3: D-FUMT₈ name, ledger-only (spec §1.3)
 
     def to_jsonl_dict(self) -> Dict[str, Any]:
         """Serialize to dict for JSONL writing.
 
         Field order kept stable for grep-ability. reason_code omitted for
-        VALID/INVALID rows.
+        VALID/INVALID rows. d_fumt8 emitted only when present (backward
+        compat with pre-v0.3 rows).
         """
         d: Dict[str, Any] = {
             "ts_utc": self.ts_utc,
@@ -166,4 +183,6 @@ class LedgerEntry:
         }
         if self.reason_code is not None:
             d["reason_code"] = self.reason_code.value
+        if self.d_fumt8 is not None:
+            d["d_fumt8"] = self.d_fumt8
         return d

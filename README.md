@@ -1,6 +1,6 @@
 # rei-checker-mcp
 
-**形式検証チェッカー MCP v0.1.0a1** — 一行を受け取り、真偽を返す。 それ以上でも それ以下でもない。
+**形式検証チェッカー MCP v0.3.0a1** — 一行を受け取り、真偽を返す。 それ以上でも それ以下でもない。
 
 Three-valued verdict (`VALID` / `INVALID` / `UNDECIDED`). No LLM in the judgment path. Every UNDECIDED carries a reason code and lands in an append-only refutation ledger.
 
@@ -109,18 +109,43 @@ MCP tool は **2 つだけ** (spec §2、 意図的最小):
 - 複数バックエンド対応 (Lean 4 のみ、 v0 spike は Mock backend で 動作)
 - Claude 固有の 機能への 依存
 
-## v0 の 状態 (honest scope、 2026-08-22 spike)
+## v0.3.0a1 の 状態 (2026-08-24 STEP 1401)
 
-- ✅ Schema (3 値 + reason code 6 種) 完全実装
+- ✅ Schema (3 値 + reason code 7 種) 完全実装
 - ✅ Mock backend (test 用 truth table + 全 reason code trigger)
 - ✅ Ledger (append-only JSONL、 UTF-8、 malformed row skip)
 - ✅ stats() aggregate (decision_rate + reason_breakdown)
 - ✅ MCP stdio server (initialize + tools/list + tools/call)
 - ✅ CLI (verify / stats / mcp / version subcommand)
-- ⚠ **Lean 4 backend は stub** (v0.2 candidate、 lean_backend/ dir で 実装予定)
-- ⚠ Timeout enforcement は soft (elapsed 監視、 hard process kill は v0.2)
+- ✅ **LeanBackend Stage 1 wired** (v0.3、 lean_checker_repl.exe persistent JSON REPL、 warm ~1.5ms)
+- ✅ **Timeout hard-kill** (v0.3、 background thread + Queue、 hanging Lean process kill on timeout)
+- ✅ **D-FUMT₈ 内部 projection** (v0.3、 ledger 層のみ、 spec §1.3 preserve)
+- ⚠ Lean 4 Stage 2 (real elaboration) は 未実装 (Stage 1 hardcoded truth table のみ、 次 v0.4 spike)
 
-**「まず 使われる」 が 優先** (spec §1.3、 §6.6)。 Lean 4 harness 完成後、 backend を 差し替えれば 実 判定 稼働。 API surface は 変わらない。
+**「まず 使われる」 が 優先** (spec §1.3、 §6.6)。 Lean 4 Stage 2 (real Lean.Elab dispatch) 完成後、 LeanBackend 自体は 変更不要 (harness 側のみ upgrade)。 API surface は 変わらない。
+
+### D-FUMT₈ ledger annotation (v0.3)
+
+各 verify() 呼び出し で ledger row に `d_fumt8` field が 追加される (spec §1.3 保護、 verify() 応答 の API surface には **出さない**)。 mapping:
+
+| verdict / reason_code | D-FUMT₈ | 根拠 |
+|---|---|---|
+| VALID | TRUE (⊤) | 証明済 |
+| INVALID | FALSE (⊥) | 反証済 |
+| UNDECIDED / TIMEOUT | NEITHER (〜) | chat-Claude 「便りが来ない」 |
+| UNDECIDED / PARSE_FAILURE | ZERO (〇) | まだ問われていない |
+| UNDECIDED / DEPTH_LIMIT | INFINITY (∞) | 上限 hit |
+| UNDECIDED / (他 4 種) | NEITHER (〜) | 判定不能 |
+
+集計 (opt-in):
+
+```python
+from rei_checker.stats import stats
+result = stats(include_d_fumt8=True)
+# result.d_fumt8_breakdown → {"TRUE": N, "FALSE": M, "NEITHER": K, ...}
+```
+
+`stats()` default (opt-in flag なし) は 従来 3-value output のみ = **spec §1.3 preserved**。
 
 ## Phase 2 (v0 完了までは 着手しない)
 

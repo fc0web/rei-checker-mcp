@@ -28,6 +28,7 @@ from rei_checker.backend import (
     LeanBackend,
     enforce_timeout,
 )
+from rei_checker.d_fumt8 import map_verdict_to_d8
 from rei_checker.ledger import (
     append_entry,
     normalize_expression,
@@ -104,6 +105,10 @@ def verify(
     )
 
     if record:
+        # v0.3: D-FUMT₈ projection is computed here and stored in the
+        # ledger row only. Spec §1.3 preserved: VerifyResult (returned to
+        # caller) does NOT carry d_fumt8. See rei_checker/d_fumt8.py.
+        d8_value = map_verdict_to_d8(verdict, reason_code)
         entry = LedgerEntry(
             ts_utc=utc_now_iso(),
             expression_normalized=normalized,
@@ -111,6 +116,7 @@ def verify(
             checker_version=CHECKER_VERSION,
             elapsed_ms=int(elapsed_ms),
             reason_code=reason_code,
+            d_fumt8=d8_value.value,
         )
         append_entry(entry, ledger_path=ledger_path)
 

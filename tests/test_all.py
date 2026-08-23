@@ -247,15 +247,350 @@ class TestMockBackendHappyPaths(unittest.TestCase):
         self.assertEqual(v, Verdict.INVALID)
 
 
-class TestLeanBackendStub(unittest.TestCase):
-    """Spec §5: Lean 4 is the sole intended real backend. v0 stub only."""
+class TestLeanBackendV03(unittest.TestCase):
+    """v0.3: LeanBackend wired to lean_checker_repl.exe via persistent JSON REPL.
 
-    def test_stub_always_returns_undecided_out_of_scope(self):
-        backend = LeanBackend()
+    Stage 1 semantics: hardcoded truth table matching MockBackend. These
+    tests skip cleanly if the binary is not built (lean_backend/.lake/build).
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.backend = LeanBackend()
+        if not cls.backend.is_available():
+            raise unittest.SkipTest(
+                f"lean_checker_repl not built at {cls.backend.binary_path}. "
+                f"Build with: cd lean_backend && lake build"
+            )
+
+    @classmethod
+    def tearDownClass(cls):
+        if hasattr(cls, "backend"):
+            cls.backend.close()
+
+    def test_valid_expression(self):
+        v, code, detail = self.backend.check("1 + 1 = 2")
+        self.assertEqual(v, Verdict.VALID)
+        self.assertIsNone(code)
+
+    def test_invalid_expression(self):
+        v, code, detail = self.backend.check("1 + 1 = 3")
+        self.assertEqual(v, Verdict.INVALID)
+        self.assertIsNone(code)
+
+    def test_undecided_axiom_test(self):
+        v, code, detail = self.backend.check("<axiom-test>")
+        self.assertEqual(v, Verdict.UNDECIDED)
+        self.assertEqual(code, ReasonCode.MISSING_AXIOM)
+
+    def test_undecided_syntax_test(self):
+        v, code, detail = self.backend.check("<syntax-test>")
+        self.assertEqual(v, Verdict.UNDECIDED)
+        self.assertEqual(code, ReasonCode.UNSUPPORTED_SYNTAX)
+
+    def test_undecided_depth_test(self):
+        v, code, detail = self.backend.check("<depth-test>")
+        self.assertEqual(v, Verdict.UNDECIDED)
+        self.assertEqual(code, ReasonCode.DEPTH_LIMIT)
+
+    def test_out_of_scope_default(self):
+        v, code, detail = self.backend.check("some unknown thing 12345")
+        self.assertEqual(v, Verdict.UNDECIDED)
+        self.assertEqual(code, ReasonCode.OUT_OF_SCOPE)
+
+    def test_empty_expression_parse_failure(self):
+        v, code, detail = self.backend.check("")
+        self.assertEqual(v, Verdict.UNDECIDED)
+        self.assertEqual(code, ReasonCode.PARSE_FAILURE)
+
+    def test_process_reuse_warm_calls(self):
+        """Second call reuses the same subprocess (warm invocation)."""
+        pid_before = self.backend._proc.pid if self.backend._proc else None
+        v1, _, _ = self.backend.check("True")
+        pid1 = self.backend._proc.pid if self.backend._proc else None
+        v2, _, _ = self.backend.check("False")
+        pid2 = self.backend._proc.pid if self.backend._proc else None
+        self.assertEqual(v1, Verdict.VALID)
+        self.assertEqual(v2, Verdict.INVALID)
+        # Same subprocess reused across calls (warm path)
+        self.assertEqual(pid1, pid2)
+
+
+class TestLeanBackendGracefulDegradation(unittest.TestCase):
+    """v0.3: LeanBackend behavior when binary is missing."""
+
+    def test_missing_binary_returns_out_of_scope(self):
+        backend = LeanBackend(binary_path="/nonexistent/lean_checker_repl.exe")
         v, code, detail = backend.check("1 + 1 = 2")
         self.assertEqual(v, Verdict.UNDECIDED)
         self.assertEqual(code, ReasonCode.OUT_OF_SCOPE)
-        self.assertIn("stub", detail)
+        self.assertIn("binary not available", detail)
+        self.assertIn("/nonexistent/", detail)
+
+    def test_is_available_false_for_missing_binary(self):
+        backend = LeanBackend(binary_path="/nonexistent/foo.exe")
+        self.assertFalse(backend.is_available())
+
+    def test_close_idempotent(self):
+        backend = LeanBackend(binary_path="/nonexistent/foo.exe")
+        # Never spawned — close should still be safe
+        backend.close()
+        backend.close()  # Second call must not raise
+
+
+class TestDFumt8Mapping(unittest.TestCase):
+    """v0.3: D-FUMT₈ internal projection layer (rei_checker/d_fumt8.py).
+
+    Spec §1.3: this mapping is for ledger annotation only. Do NOT expose
+    the D8Value at the VerifyResult / stats() default surface.
+    """
+
+    def test_valid_maps_to_true(self):
+        from rei_checker.d_fumt8 import map_verdict_to_d8, D8Value
+        self.assertEqual(map_verdict_to_d8(Verdict.VALID), D8Value.TRUE)
+
+    def test_invalid_maps_to_false(self):
+        from rei_checker.d_fumt8 import map_verdict_to_d8, D8Value
+        self.assertEqual(map_verdict_to_d8(Verdict.INVALID), D8Value.FALSE)
+
+    def test_undecided_timeout_maps_to_neither(self):
+        from rei_checker.d_fumt8 import map_verdict_to_d8, D8Value
+        self.assertEqual(
+            map_verdict_to_d8(Verdict.UNDECIDED, ReasonCode.TIMEOUT),
+            D8Value.NEITHER,
+        )
+
+    def test_undecided_parse_failure_maps_to_zero(self):
+        from rei_checker.d_fumt8 import map_verdict_to_d8, D8Value
+        self.assertEqual(
+            map_verdict_to_d8(Verdict.UNDECIDED, ReasonCode.PARSE_FAILURE),
+            D8Value.ZERO,
+        )
+
+    def test_undecided_depth_limit_maps_to_infinity(self):
+        from rei_checker.d_fumt8 import map_verdict_to_d8, D8Value
+        self.assertEqual(
+            map_verdict_to_d8(Verdict.UNDECIDED, ReasonCode.DEPTH_LIMIT),
+            D8Value.INFINITY,
+        )
+
+    def test_undecided_missing_axiom_maps_to_neither(self):
+        from rei_checker.d_fumt8 import map_verdict_to_d8, D8Value
+        self.assertEqual(
+            map_verdict_to_d8(Verdict.UNDECIDED, ReasonCode.MISSING_AXIOM),
+            D8Value.NEITHER,
+        )
+
+    def test_undecided_unsupported_syntax_maps_to_neither(self):
+        from rei_checker.d_fumt8 import map_verdict_to_d8, D8Value
+        self.assertEqual(
+            map_verdict_to_d8(Verdict.UNDECIDED, ReasonCode.UNSUPPORTED_SYNTAX),
+            D8Value.NEITHER,
+        )
+
+    def test_undecided_out_of_scope_maps_to_neither(self):
+        from rei_checker.d_fumt8 import map_verdict_to_d8, D8Value
+        self.assertEqual(
+            map_verdict_to_d8(Verdict.UNDECIDED, ReasonCode.OUT_OF_SCOPE),
+            D8Value.NEITHER,
+        )
+
+    def test_undecided_unclassified_maps_to_neither(self):
+        from rei_checker.d_fumt8 import map_verdict_to_d8, D8Value
+        self.assertEqual(
+            map_verdict_to_d8(Verdict.UNDECIDED, ReasonCode.UNCLASSIFIED),
+            D8Value.NEITHER,
+        )
+
+    def test_undecided_without_reason_code_raises(self):
+        from rei_checker.d_fumt8 import map_verdict_to_d8
+        with self.assertRaises(ValueError):
+            map_verdict_to_d8(Verdict.UNDECIDED, None)
+
+    def test_d8_payload_has_source_marker(self):
+        from rei_checker.d_fumt8 import d8_payload, D8Value, D_FUMT8_MAPPING_SOURCE
+        payload = d8_payload(D8Value.NEITHER)
+        self.assertEqual(payload["name"], "NEITHER")
+        self.assertEqual(payload["symbol"], "〜")
+        self.assertEqual(payload["numeric"], -1.0)
+        self.assertEqual(payload["source"], D_FUMT8_MAPPING_SOURCE)
+        # Source marker must include "rei-checker" so downstream can
+        # distinguish this projection from rei-aios D-FUMT₈ producers.
+        self.assertIn("rei-checker", payload["source"])
+
+    def test_spec_table_covers_all_reason_codes(self):
+        from rei_checker.d_fumt8 import spec_table
+        table = spec_table()
+        # VALID + INVALID + 7 reason_codes = 9 entries
+        self.assertEqual(len(table), 9)
+        # Every entry has the required keys
+        for entry in table:
+            self.assertIn("verdict", entry)
+            self.assertIn("d8_name", entry)
+            self.assertIn("d8_symbol", entry)
+            self.assertIn("rationale", entry)
+
+    def test_spec_table_neither_dominates_for_undecidable_reasons(self):
+        """Sanity: TIMEOUT/UNSUPPORTED/MISSING/OUT_OF_SCOPE/UNCLASSIFIED
+        all collapse to NEITHER (chat-Claude 「便りが来ない」 principle)."""
+        from rei_checker.d_fumt8 import spec_table
+        neither_codes = {
+            e["reason_code"] for e in spec_table()
+            if e["d8_name"] == "NEITHER"
+        }
+        self.assertEqual(
+            neither_codes,
+            {"TIMEOUT", "UNSUPPORTED_SYNTAX", "MISSING_AXIOM",
+             "OUT_OF_SCOPE", "UNCLASSIFIED"},
+        )
+
+
+class TestLedgerEntryD8Field(unittest.TestCase):
+    """v0.3: LedgerEntry.d_fumt8 optional field."""
+
+    def test_d_fumt8_optional_default_none(self):
+        entry = LedgerEntry(
+            ts_utc="2026-08-24T00:00:00Z",
+            expression_normalized="1 + 1 = 2",
+            verdict=Verdict.VALID,
+            checker_version=CHECKER_VERSION,
+            elapsed_ms=10,
+        )
+        self.assertIsNone(entry.d_fumt8)
+
+    def test_d_fumt8_omitted_from_json_when_none(self):
+        entry = LedgerEntry(
+            ts_utc="2026-08-24T00:00:00Z",
+            expression_normalized="1 + 1 = 2",
+            verdict=Verdict.VALID,
+            checker_version=CHECKER_VERSION,
+            elapsed_ms=10,
+        )
+        d = entry.to_jsonl_dict()
+        self.assertNotIn("d_fumt8", d)
+
+    def test_d_fumt8_included_in_json_when_present(self):
+        entry = LedgerEntry(
+            ts_utc="2026-08-24T00:00:00Z",
+            expression_normalized="1 + 1 = 2",
+            verdict=Verdict.VALID,
+            checker_version=CHECKER_VERSION,
+            elapsed_ms=10,
+            d_fumt8="TRUE",
+        )
+        d = entry.to_jsonl_dict()
+        self.assertEqual(d["d_fumt8"], "TRUE")
+
+
+class TestVerifyD8LedgerIntegration(unittest.TestCase):
+    """v0.3: verify() writes D-FUMT₈ projection to ledger row.
+
+    Spec §1.3 preservation check: VerifyResult (returned to caller) must
+    NOT expose d_fumt8 — it stays in the ledger row only.
+    """
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.ledger_path = Path(self.tmpdir) / "test_ledger.jsonl"
+
+    def tearDown(self):
+        if self.ledger_path.exists():
+            self.ledger_path.unlink()
+        os.rmdir(self.tmpdir)
+
+    def test_verify_valid_writes_true_to_ledger(self):
+        from rei_checker.verify import verify
+        result = verify("1 + 1 = 2", ledger_path=self.ledger_path,
+                        backend=MockBackend())
+        # Result itself: 3-value verdict, no d_fumt8 field (spec §1.3)
+        self.assertEqual(result.verdict, Verdict.VALID)
+        self.assertFalse(hasattr(result, "d_fumt8"))
+        # But ledger row has d_fumt8="TRUE"
+        with open(self.ledger_path, "r", encoding="utf-8") as f:
+            row = json.loads(f.readline().strip())
+        self.assertEqual(row["d_fumt8"], "TRUE")
+
+    def test_verify_undecided_axiom_writes_neither_to_ledger(self):
+        from rei_checker.verify import verify
+        result = verify("<axiom-test>", ledger_path=self.ledger_path,
+                        backend=MockBackend())
+        self.assertEqual(result.verdict, Verdict.UNDECIDED)
+        self.assertEqual(result.reason_code, ReasonCode.MISSING_AXIOM)
+        # Ledger: MISSING_AXIOM → NEITHER
+        with open(self.ledger_path, "r", encoding="utf-8") as f:
+            row = json.loads(f.readline().strip())
+        self.assertEqual(row["d_fumt8"], "NEITHER")
+
+    def test_verify_result_dict_does_not_expose_d_fumt8(self):
+        """spec §1.3 check: MCP response dict must not carry d_fumt8."""
+        from rei_checker.verify import verify
+        result = verify("1 + 1 = 2", ledger_path=self.ledger_path,
+                        backend=MockBackend())
+        d = result.to_dict()
+        self.assertNotIn("d_fumt8", d)
+
+
+class TestStatsD8Optin(unittest.TestCase):
+    """v0.3: stats(include_d_fumt8=True) opt-in returns d_fumt8_breakdown."""
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.ledger_path = Path(self.tmpdir) / "test_ledger.jsonl"
+
+    def tearDown(self):
+        if self.ledger_path.exists():
+            self.ledger_path.unlink()
+        os.rmdir(self.tmpdir)
+
+    def _seed_ledger(self):
+        """Populate ledger with 3 rows (VALID + INVALID + UNDECIDED/AXIOM)."""
+        from rei_checker.verify import verify
+        verify("1 + 1 = 2", ledger_path=self.ledger_path, backend=MockBackend())
+        verify("1 + 1 = 3", ledger_path=self.ledger_path, backend=MockBackend())
+        verify("<axiom-test>", ledger_path=self.ledger_path, backend=MockBackend())
+
+    def test_stats_default_no_d_fumt8_breakdown(self):
+        """Spec §1.3: default off. StatsResult.d_fumt8_breakdown is None."""
+        from rei_checker.stats import stats
+        self._seed_ledger()
+        result = stats(ledger_path=self.ledger_path)
+        self.assertIsNone(result.d_fumt8_breakdown)
+        # to_dict() must omit the field (backward compat)
+        self.assertNotIn("d_fumt8_breakdown", result.to_dict())
+
+    def test_stats_include_d_fumt8_returns_breakdown(self):
+        from rei_checker.stats import stats
+        self._seed_ledger()
+        result = stats(ledger_path=self.ledger_path, include_d_fumt8=True)
+        self.assertIsNotNone(result.d_fumt8_breakdown)
+        # 1 VALID → TRUE, 1 INVALID → FALSE, 1 UNDECIDED/AXIOM → NEITHER
+        self.assertEqual(result.d_fumt8_breakdown["TRUE"], 1)
+        self.assertEqual(result.d_fumt8_breakdown["FALSE"], 1)
+        self.assertEqual(result.d_fumt8_breakdown["NEITHER"], 1)
+        # to_dict() includes the field
+        self.assertIn("d_fumt8_breakdown", result.to_dict())
+
+    def test_stats_pre_v03_rows_skipped_in_breakdown(self):
+        """Rows without d_fumt8 field (pre-v0.3) are skipped, not counted."""
+        from rei_checker.stats import stats
+        # Write an old-format row manually (no d_fumt8 field)
+        old_row = {
+            "ts_utc": "2026-08-20T00:00:00Z",
+            "expression_normalized": "old row",
+            "verdict": "VALID",
+            "checker_version": "rei-checker-mcp/0.2.0a1+utils-2026-08-22",
+            "elapsed_ms": 5,
+        }
+        with open(self.ledger_path, "w", encoding="utf-8") as f:
+            f.write(json.dumps(old_row) + "\n")
+        # Now add a v0.3 row
+        self._seed_ledger()
+        result = stats(ledger_path=self.ledger_path, include_d_fumt8=True)
+        # Breakdown counts only v0.3 rows (3 rows), old row skipped
+        total_in_breakdown = sum(result.d_fumt8_breakdown.values())
+        self.assertEqual(total_in_breakdown, 3)
+        # But overall total includes the old row
+        self.assertEqual(result.total, 4)
 
 
 class TestEnforceTimeout(unittest.TestCase):

@@ -113,6 +113,9 @@ def read_all_entries(
                         checker_version=d["checker_version"],
                         elapsed_ms=int(d["elapsed_ms"]),
                         reason_code=reason_code,
+                        # v0.3: d_fumt8 field optional (backward compat
+                        # with pre-v0.3 rows that lack it).
+                        d_fumt8=d.get("d_fumt8"),
                     )
                 )
             except (json.JSONDecodeError, KeyError, ValueError) as e:

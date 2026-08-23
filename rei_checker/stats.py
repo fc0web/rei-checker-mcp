@@ -16,7 +16,11 @@ from rei_checker.ledger import read_all_entries
 from rei_checker.schema import StatsResult, Verdict
 
 
-def stats(ledger_path: Optional[Path] = None) -> StatsResult:
+def stats(
+    ledger_path: Optional[Path] = None,
+    *,
+    include_d_fumt8: bool = False,
+) -> StatsResult:
     """Read the ledger and return aggregate stats.
 
     Empty ledger → total=0, decision_rate=0.0, empty reason_breakdown.
@@ -25,6 +29,14 @@ def stats(ledger_path: Optional[Path] = None) -> StatsResult:
 
     Spec §3: this MUST return decision_rate. Everything else exists to
     contextualize it.
+
+    Args:
+        ledger_path: optional override for tests.
+        include_d_fumt8: v0.3 opt-in flag. When True, adds d_fumt8_breakdown
+            to the result (ledger annotation aggregation). Default False
+            preserves spec §1.3 (D-FUMT₈ not on default API surface).
+            Rows without d_fumt8 field (pre-v0.3 ledger) are skipped in
+            the breakdown, not counted as any D-FUMT₈ value.
     """
     entries = read_all_entries(ledger_path)
     total = len(entries)
@@ -40,6 +52,15 @@ def stats(ledger_path: Optional[Path] = None) -> StatsResult:
         if e.reason_code is not None
     )
 
+    d_fumt8_breakdown: Optional[dict] = None
+    if include_d_fumt8:
+        # Only rows that carry d_fumt8 (i.e. v0.3+ writes). Pre-v0.3 rows
+        # are silently skipped — do NOT infer d_fumt8 retroactively.
+        d_fumt8_counter = Counter(
+            e.d_fumt8 for e in entries if e.d_fumt8 is not None
+        )
+        d_fumt8_breakdown = dict(d_fumt8_counter)
+
     return StatsResult(
         total=total,
         valid=valid,
@@ -47,4 +68,5 @@ def stats(ledger_path: Optional[Path] = None) -> StatsResult:
         undecided=undecided,
         decision_rate=decision_rate,
         reason_breakdown=dict(reason_breakdown),
+        d_fumt8_breakdown=d_fumt8_breakdown,
     )

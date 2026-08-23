@@ -13,16 +13,22 @@ The Backend contract is intentionally narrow:
 MockBackend: hard-coded truth table for the tests + fallback UNDECIDED /
 OUT_OF_SCOPE. Useful for CI where Lean 4 is not available.
 
-LeanBackend: subprocess wrapper skeleton. v0.2 candidate — the actual
-`lean --run` invocation and result parsing are deferred to a follow-up
-spike once we have a Lean 4 harness written (see lean_backend/ dir).
+LeanBackend (v0.3): persistent JSON REPL client for lean_checker_repl.exe
+built under lean_backend/.lake/build/bin/. Stage 1 semantics (mirrors
+MockBackend truth table) wired end-to-end. Stage 2 (real elaboration) is
+future work. See lean_backend/README.md for the harness architecture.
 """
 
 from __future__ import annotations
 
+import json
+import os
+import queue
 import subprocess
+import threading
 import time
 from abc import ABC, abstractmethod
+from pathlib import Path
 from typing import Optional, Tuple
 
 from rei_checker.schema import Verdict, ReasonCode
@@ -143,26 +149,132 @@ class MockBackend(CheckerBackend):
 
 
 class LeanBackend(CheckerBackend):
-    """Lean 4 subprocess backend (spike stub, spec §6 step 1).
+    """Lean 4 persistent REPL backend (v0.3, Stage 1 semantics wired).
 
-    v0 spike scope: interface defined, timeout enforcement present, but
-    the actual Lean 4 elaboration pipeline is a placeholder. Currently
-    returns UNDECIDED/OUT_OF_SCOPE for every input, with a detail line
-    identifying itself as the stub.
+    Spawns lean_checker_repl.exe on first check() call and reuses it for
+    subsequent calls. Warm invocations ~1.5ms per STEP 1367 measurement.
+    Cold spawn ~150ms (Lean 4 runtime init).
 
-    v0.2+ work: write a small Lean 4 harness under lean_backend/ that
-    accepts one expression via stdin, runs it through Lean's elaborator,
-    and prints VALID / INVALID / UNDECIDED + reason on stdout. Then this
-    class becomes a subprocess wrapper around that harness.
+    JSON protocol per line (see lean_backend/Main.lean):
+        Request:  {"expression": "..."}
+        Response: {"verdict": "VALID"|"INVALID"|"UNDECIDED",
+                   "reason_code"?: "...", "detail"?: "...",
+                   "checker_version": "lean-checker-repl/..."}
 
-    Spec §5 says Lean 4 is the ONLY intended real backend. This stub
-    exists so the interface can be exercised end-to-end today.
+    Timeout handling: reader runs in background thread, main check() uses
+    Queue.get(timeout=). On timeout, subprocess is killed and next call
+    respawns — never leaves a zombie hanging Lean process.
+
+    Failure modes (all → UNDECIDED with appropriate reason_code):
+        binary missing       → OUT_OF_SCOPE + detail path
+        process crash        → PARSE_FAILURE + detail
+        response timeout     → TIMEOUT + detail (process killed)
+        malformed JSON       → PARSE_FAILURE + detail
+        unknown verdict str  → UNCLASSIFIED (V02_PROTOCOL §6 D11)
+
+    v0.3 scope: Stage 1 semantics (matches MockBackend truth table).
+    Stage 2 (real Lean.Elab dispatch) is future work — the wire is
+    already in place, only lean_backend/Main.lean's judge() needs to
+    upgrade its logic. This backend does not need to change for Stage 2.
+
+    Spec §1.1 preserved: no LLM anywhere in the path.
     """
 
-    name = "lean-stub"
+    name = "lean-repl"
 
-    def __init__(self, lean_binary: str = "lean") -> None:
-        self.lean_binary = lean_binary
+    def __init__(self, binary_path: Optional[str] = None) -> None:
+        self.binary_path = binary_path or self._default_binary_path()
+        self._proc: Optional[subprocess.Popen] = None
+        self._stdout_queue: Optional["queue.Queue[str]"] = None
+        self._stdout_thread: Optional[threading.Thread] = None
+
+    @staticmethod
+    def _default_binary_path() -> str:
+        """Auto-detect lean_checker_repl.exe from repo layout.
+
+        Priority:
+        1. $REI_CHECKER_LEAN_BINARY env var (absolute path override)
+        2. <repo_root>/lean_backend/.lake/build/bin/lean_checker_repl.exe
+        3. <repo_root>/lean_backend/.lake/build/bin/lean_checker_repl (Unix)
+        """
+        env = os.environ.get("REI_CHECKER_LEAN_BINARY")
+        if env:
+            return env
+        repo_root = Path(__file__).resolve().parent.parent
+        bin_dir = repo_root / "lean_backend" / ".lake" / "build" / "bin"
+        exe = bin_dir / "lean_checker_repl.exe"
+        if exe.exists():
+            return str(exe)
+        return str(bin_dir / "lean_checker_repl")
+
+    def is_available(self) -> bool:
+        """Check whether the binary exists on disk (utility for tests)."""
+        return Path(self.binary_path).exists()
+
+    def _ensure_process(self) -> bool:
+        """Spawn REPL process if not running. Returns True on success."""
+        if self._proc is not None and self._proc.poll() is None:
+            return True
+        # Cleanup any stale state
+        self._cleanup()
+        if not self.is_available():
+            return False
+        try:
+            self._proc = subprocess.Popen(
+                [self.binary_path],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                encoding="utf-8",
+                bufsize=1,  # line-buffered
+            )
+        except (OSError, FileNotFoundError):
+            return False
+        # Start stdout reader thread
+        self._stdout_queue = queue.Queue()
+        self._stdout_thread = threading.Thread(
+            target=self._read_stdout,
+            daemon=True,
+            name="lean-repl-stdout-reader",
+        )
+        self._stdout_thread.start()
+        return True
+
+    def _read_stdout(self) -> None:
+        """Read stdout lines into queue. Runs in background daemon thread."""
+        if self._proc is None or self._proc.stdout is None:
+            return
+        try:
+            for line in self._proc.stdout:
+                if self._stdout_queue is not None:
+                    self._stdout_queue.put(line)
+                else:
+                    return
+        except (OSError, ValueError):
+            # Process died mid-read; thread exits, next check() respawns.
+            return
+
+    def _cleanup(self) -> None:
+        """Kill subprocess and reset state. Safe to call multiple times."""
+        if self._proc is not None:
+            try:
+                if self._proc.poll() is None:
+                    self._proc.terminate()
+                    try:
+                        self._proc.wait(timeout=2.0)
+                    except subprocess.TimeoutExpired:
+                        self._proc.kill()
+                        try:
+                            self._proc.wait(timeout=1.0)
+                        except subprocess.TimeoutExpired:
+                            pass
+            except (OSError, ValueError):
+                pass
+            self._proc = None
+        # Thread is daemon; will exit when queue is dropped.
+        self._stdout_queue = None
+        self._stdout_thread = None
 
     def check(
         self,
@@ -171,27 +283,110 @@ class LeanBackend(CheckerBackend):
         context: Optional[str] = None,
         timeout_ms: int = 5_000,
     ) -> BackendResult:
-        # v0 stub: always UNDECIDED/OUT_OF_SCOPE. Enforcing the
-        # interface contract without pretending to check.
+        # Ensure process is running.
+        if not self._ensure_process():
+            return (
+                Verdict.UNDECIDED,
+                ReasonCode.OUT_OF_SCOPE,
+                f"LeanBackend binary not available at {self.binary_path}",
+            )
+        assert self._proc is not None and self._proc.stdin is not None
+        assert self._stdout_queue is not None
+
+        # Send JSON request (one line).
+        request = json.dumps({"expression": expression}, ensure_ascii=False)
+        try:
+            self._proc.stdin.write(request + "\n")
+            self._proc.stdin.flush()
+        except (OSError, ValueError, BrokenPipeError) as e:
+            self._cleanup()
+            return (
+                Verdict.UNDECIDED,
+                ReasonCode.PARSE_FAILURE,
+                f"LeanBackend write failed: {type(e).__name__}: {e}",
+            )
+
+        # Read response with timeout. On timeout, kill process so the
+        # next call respawns — never leave a hanging Lean instance.
+        timeout_s = max(0.001, timeout_ms / 1000.0)
+        try:
+            line = self._stdout_queue.get(timeout=timeout_s)
+        except queue.Empty:
+            self._cleanup()
+            return (
+                Verdict.UNDECIDED,
+                ReasonCode.TIMEOUT,
+                f"LeanBackend REPL timeout ({timeout_ms} ms, process killed)",
+            )
+
+        # Parse JSON response.
+        try:
+            resp = json.loads(line.strip())
+        except json.JSONDecodeError as e:
+            return (
+                Verdict.UNDECIDED,
+                ReasonCode.PARSE_FAILURE,
+                f"LeanBackend returned invalid JSON: {e}",
+            )
+
+        # Extract verdict + reason_code + detail.
+        v_str = resp.get("verdict")
+        if v_str == "VALID":
+            return (Verdict.VALID, None, None)
+        if v_str == "INVALID":
+            return (Verdict.INVALID, None, None)
+        if v_str == "UNDECIDED":
+            rc_str = resp.get("reason_code")
+            detail = resp.get("detail")
+            if rc_str is None:
+                # V02_PROTOCOL §6 D11: silent-misclassification prevention.
+                return (
+                    Verdict.UNDECIDED,
+                    ReasonCode.UNCLASSIFIED,
+                    detail or "LeanBackend UNDECIDED without reason_code",
+                )
+            try:
+                rc = ReasonCode(rc_str)
+            except ValueError:
+                # Unknown reason_code from Lean side → UNCLASSIFIED.
+                return (
+                    Verdict.UNDECIDED,
+                    ReasonCode.UNCLASSIFIED,
+                    f"LeanBackend returned unknown reason_code {rc_str!r}: {detail}",
+                )
+            return (Verdict.UNDECIDED, rc, detail)
+
+        # Unknown verdict string (protocol drift).
         return (
             Verdict.UNDECIDED,
-            ReasonCode.OUT_OF_SCOPE,
-            "LeanBackend v0 stub: real Lean 4 elaboration not yet wired "
-            "(see lean_backend/ dir + v0.2 candidate)",
+            ReasonCode.UNCLASSIFIED,
+            f"LeanBackend returned unknown verdict: {v_str!r}",
         )
 
-    def _is_lean_available(self) -> bool:
-        """Check whether `lean --version` runs. Utility for future spike."""
+    def close(self) -> None:
+        """Explicit shutdown: send __QUIT__ sentinel then cleanup.
+
+        Idempotent — safe to call multiple times.
+        """
+        if self._proc is not None and self._proc.poll() is None:
+            try:
+                if self._proc.stdin is not None:
+                    self._proc.stdin.write("__QUIT__\n")
+                    self._proc.stdin.flush()
+                try:
+                    self._proc.wait(timeout=2.0)
+                except subprocess.TimeoutExpired:
+                    pass
+            except (OSError, ValueError, BrokenPipeError):
+                pass
+        self._cleanup()
+
+    def __del__(self) -> None:
+        # Best-effort cleanup on GC.
         try:
-            result = subprocess.run(
-                [self.lean_binary, "--version"],
-                capture_output=True,
-                timeout=5.0,
-                text=True,
-            )
-            return result.returncode == 0
-        except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
-            return False
+            self.close()
+        except Exception:
+            pass
 
 
 def enforce_timeout(

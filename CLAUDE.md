@@ -109,6 +109,27 @@ v0 の成功条件は 「判定率が 高いこと」 ではない。 **判定�
 
 ---
 
+# v0.3.0a1 (2026-08-24、 STEP 1401) landed
+
+- **LeanBackend Stage 1 wired** (persistent JSON REPL、 `lean_backend/.lake/build/bin/lean_checker_repl.exe`)
+- **D-FUMT₈ 内部 projection** (`rei_checker/d_fumt8.py`)、 **ledger 層のみ** (spec §1.3 preserve: verify() 応答 に 出さない)
+- **stats(include_d_fumt8=True) opt-in**、 default off で backward compat
+- **Timeout hard-kill** (background thread + Queue、 hanging Lean process kill)
+- test 105/105 PASS (v0.2.0a1 73 + v0.3 32 追加)
+
+## v0.3 D-FUMT₈ mapping (spec §1.3 preservation の operational form)
+
+pending-lean4-neither-mcp-connector (b) pickup。 chat-Claude 2-turn arc 「Lean4 sorry-zero 実在 + NEITHER 意味論完成 + 接続 gap」 を **ledger 経由で 埋める** approach (rei-aios STEP 1349/1350/1371/1376/1377/1379/1397 D-FUMT₈ surface と 独立、 単方向 flow)。
+
+**spec §1.3 保護 の 3 条件**:
+1. `VerifyResult` (MCP response) には `d_fumt8` field を **出さない**
+2. `StatsResult` の default output も 変えない (`include_d_fumt8=True` opt-in のみ で 表示)
+3. `LedgerEntry` にのみ `d_fumt8` optional field 追加 (backward compat: pre-v0.3 rows 読み込み OK)
+
+mapping table は `rei_checker/d_fumt8.py` の docstring + `spec_table()` で 参照可能。 downstream (rei-aios MCP、 cross-project 分析) は ledger.jsonl grep で D-FUMT₈ 分布を 取得。
+
+---
+
 # v0.2 事前対策 (LeanBackend 実装前に 必須読み込み)
 
 **LeanBackend stub を 実 Lean 4 backend に 差し替える前に**、 [`docs/V02_PROTOCOL.md`](./docs/V02_PROTOCOL.md) を **必ず** 読むこと。 5 protocol (A1 sandbox / A2 spawn error / A3 process tree kill / B4 --json axiom parse / C7 REPL server + D11 ERR_UNCLASSIFIED) の 事前対策を skip すると:
