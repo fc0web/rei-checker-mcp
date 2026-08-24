@@ -5,7 +5,7 @@
 Three-valued verdict (`VALID` / `INVALID` / `UNDECIDED`). No LLM in the judgment path. Every UNDECIDED carries a reason code and lands in an append-only refutation ledger.
 
 **License**: AGPL-3.0-or-later
-**Spec**: [CHECKER_SPEC_v0.md](https://github.com/fc0web/rei-aios/blob/main/data/external-prior-art/checker-spec-v0-2026-08-22/CHECKER_SPEC_v0.md)
+**Spec**: [CHECKER_SPEC_v0.md](./docs/CHECKER_SPEC_v0.md) (JP, authoritative for intent) · [English translation](./docs/CHECKER_SPEC_v0_en.md) (RFC 2119 wording for implementors). Spec text is CC BY-NC-SA 4.0; implementation is AGPL-3.0-or-later.
 **Design invariants**: [CLAUDE.md](./CLAUDE.md)
 
 ## 5 分で 動かす
