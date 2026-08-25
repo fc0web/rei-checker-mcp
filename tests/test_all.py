@@ -33,6 +33,7 @@ from rei_checker.schema import (
     VerifyResult,
     StatsResult,
     LedgerEntry,
+    DecisionTiming,
 )
 from rei_checker.backend import (
     MockBackend,
@@ -764,6 +765,122 @@ class TestStats(unittest.TestCase):
         r = stats(self.ledger_path)
         self.assertEqual(r.decision_rate, 0.0)
         self.assertEqual(r.reason_breakdown["OUT_OF_SCOPE"], 2)
+
+
+class TestStatsByDecision(unittest.TestCase):
+    """v0.4: CHECKER_SPEC v0.1 §7 論点 — decision-stratified timing diagnostic.
+
+    Preserves Non-goal 0.2 (speed is not a goal) and I5 (no timing in
+    decision_rate). Reports per-verdict elapsed_ms quantiles so a checker
+    that returns UNDECIDED fast is distinguishable from one that returns
+    VALID slowly.
+    """
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.ledger_path = Path(self.tmpdir) / "test_ledger.jsonl"
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def _write_entries(self, entries: List[LedgerEntry]):
+        for e in entries:
+            append_entry(e, ledger_path=self.ledger_path)
+
+    def test_empty_ledger_gives_empty_by_decision(self):
+        r = stats(self.ledger_path)
+        self.assertEqual(r.by_decision, {})
+        # to_dict() omits the field when empty (backward compat).
+        self.assertNotIn("by_decision", r.to_dict())
+
+    def test_single_verdict_single_entry_collapses_quantiles(self):
+        self._write_entries([
+            LedgerEntry("2026-08-26T00:00:00Z", "a", Verdict.VALID, "v", 42),
+        ])
+        r = stats(self.ledger_path)
+        self.assertEqual(set(r.by_decision.keys()), {"VALID"})
+        vt = r.by_decision["VALID"]
+        self.assertEqual(vt.p50_ms, 42)
+        self.assertEqual(vt.p90_ms, 42)
+        self.assertEqual(vt.p99_ms, 42)
+        # Empty verdict groups are omitted (not zeroed).
+        self.assertNotIn("INVALID", r.by_decision)
+        self.assertNotIn("UNDECIDED", r.by_decision)
+
+    def test_multiple_verdicts_reported_separately(self):
+        # VALID: 100, 200, 300 → median around 200
+        # INVALID: 50 alone
+        # UNDECIDED: 1000, 2000 → clearly slowest
+        self._write_entries([
+            LedgerEntry("2026-08-26T00:00:00Z", "a", Verdict.VALID, "v", 100),
+            LedgerEntry("2026-08-26T00:00:01Z", "b", Verdict.VALID, "v", 200),
+            LedgerEntry("2026-08-26T00:00:02Z", "c", Verdict.VALID, "v", 300),
+            LedgerEntry("2026-08-26T00:00:03Z", "d", Verdict.INVALID, "v", 50),
+            LedgerEntry("2026-08-26T00:00:04Z", "e", Verdict.UNDECIDED, "v", 1000,
+                        reason_code=ReasonCode.TIMEOUT),
+            LedgerEntry("2026-08-26T00:00:05Z", "f", Verdict.UNDECIDED, "v", 2000,
+                        reason_code=ReasonCode.TIMEOUT),
+        ])
+        r = stats(self.ledger_path)
+        self.assertEqual(set(r.by_decision.keys()),
+                         {"VALID", "INVALID", "UNDECIDED"})
+        # INVALID single entry → all quantiles == 50
+        self.assertEqual(r.by_decision["INVALID"].p50_ms, 50)
+        # UNDECIDED strictly slower than VALID (motivating the diagnostic)
+        self.assertGreater(
+            r.by_decision["UNDECIDED"].p50_ms,
+            r.by_decision["VALID"].p50_ms,
+        )
+
+    def test_by_decision_present_in_to_dict_when_non_empty(self):
+        self._write_entries([
+            LedgerEntry("2026-08-26T00:00:00Z", "a", Verdict.VALID, "v", 100),
+        ])
+        r = stats(self.ledger_path)
+        d = r.to_dict()
+        self.assertIn("by_decision", d)
+        self.assertEqual(d["by_decision"]["VALID"]["p50_ms"], 100)
+        self.assertIn("p90_ms", d["by_decision"]["VALID"])
+        self.assertIn("p99_ms", d["by_decision"]["VALID"])
+
+    def test_decision_timing_rejects_non_monotonic(self):
+        with self.assertRaises(ValueError):
+            DecisionTiming(p50_ms=100, p90_ms=50, p99_ms=200)
+
+    def test_decision_timing_rejects_negative(self):
+        with self.assertRaises(ValueError):
+            DecisionTiming(p50_ms=-1, p90_ms=0, p99_ms=0)
+
+    def test_stats_result_rejects_extra_verdict_key(self):
+        # by_decision keys must be a subset of {VALID, INVALID, UNDECIDED}.
+        with self.assertRaises(ValueError):
+            StatsResult(
+                total=1, valid=1, invalid=0, undecided=0,
+                decision_rate=1.0,
+                by_decision={"BOGUS": DecisionTiming(1, 1, 1)},
+            )
+
+    def test_decision_rate_unaffected_by_by_decision(self):
+        # I5 invariant: no timing enters decision_rate.
+        # Extreme elapsed_ms disparity within VALID doesn't move decision_rate.
+        self._write_entries([
+            LedgerEntry("2026-08-26T00:00:00Z", "a", Verdict.VALID, "v", 1),
+            LedgerEntry("2026-08-26T00:00:01Z", "b", Verdict.VALID, "v", 999999),
+            LedgerEntry("2026-08-26T00:00:02Z", "c", Verdict.INVALID, "v", 1),
+        ])
+        r = stats(self.ledger_path)
+        self.assertAlmostEqual(r.decision_rate, 1.0)  # 3/3 decided
+
+    def test_by_decision_composes_with_d_fumt8_optin(self):
+        # v0.3 opt-in and v0.4 unconditional coexist without interference.
+        from rei_checker.verify import verify
+        verify("1 + 1 = 2", ledger_path=self.ledger_path, backend=MockBackend())
+        verify("1 + 1 = 3", ledger_path=self.ledger_path, backend=MockBackend())
+        r = stats(self.ledger_path, include_d_fumt8=True)
+        self.assertIn("VALID", r.by_decision)
+        self.assertIn("INVALID", r.by_decision)
+        self.assertIsNotNone(r.d_fumt8_breakdown)
 
 
 # ==========================================================================
