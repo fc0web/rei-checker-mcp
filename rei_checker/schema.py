@@ -94,6 +94,47 @@ class VerifyResult:
 
 
 @dataclass(frozen=True)
+class DecisionTiming:
+    """Elapsed-time quantiles for one verdict class.
+
+    v0.4 addition (CHECKER_SPEC v0.1 §7 論点「decision-stratified timing
+    diagnostic」). Pure diagnostic — never enters `decision_rate`.
+    Preserves Non-goal 0.2 (speed is not a goal) and I5 (no timing in metric).
+
+    Rationale: a checker that returns UNDECIDED fast is different work from
+    one that returns VALID slowly. The current marginal timing (absent from
+    StatsResult altogether) hides that separation. Reporting by verdict
+    surfaces it without promoting timing to a scored quantity.
+    """
+
+    p50_ms: int
+    p90_ms: int
+    p99_ms: int
+
+    def __post_init__(self) -> None:
+        if self.p50_ms < 0 or self.p90_ms < 0 or self.p99_ms < 0:
+            raise ValueError("percentiles must be non-negative")
+        if not (self.p50_ms <= self.p90_ms <= self.p99_ms):
+            raise ValueError(
+                f"percentiles must be non-decreasing (p50 <= p90 <= p99); "
+                f"got p50={self.p50_ms}, p90={self.p90_ms}, p99={self.p99_ms}"
+            )
+
+    def to_dict(self) -> Dict[str, int]:
+        return {
+            "p50_ms": self.p50_ms,
+            "p90_ms": self.p90_ms,
+            "p99_ms": self.p99_ms,
+        }
+
+
+# Verdict names allowed as keys in StatsResult.by_decision.
+# Kept as a module-level constant so the invariant check can reference it
+# without importing Verdict enum values in every StatsResult construction.
+_ALLOWED_BY_DECISION_KEYS = frozenset({"VALID", "INVALID", "UNDECIDED"})
+
+
+@dataclass(frozen=True)
 class StatsResult:
     """Return type of stats(). Spec §2 + §3.
 
@@ -104,6 +145,11 @@ class StatsResult:
     stats() is called with `include_d_fumt8=True`. Spec §1.3 preserved:
     default off, ledger-only annotation is the primary surface. When
     absent, `to_dict()` omits the field (backward compat).
+
+    v0.4 addition: `by_decision` field with per-verdict elapsed-time
+    quantiles (CHECKER_SPEC v0.1 §7 論点). Diagnostic only — never enters
+    `decision_rate` (I5). Empty verdict groups are omitted; when the whole
+    dict is empty, `to_dict()` omits the field (backward compat).
     """
 
     total: int
@@ -112,6 +158,7 @@ class StatsResult:
     undecided: int
     decision_rate: float
     reason_breakdown: Dict[str, int] = field(default_factory=dict)
+    by_decision: Dict[str, DecisionTiming] = field(default_factory=dict)  # v0.4 §7
     d_fumt8_breakdown: Optional[Dict[str, int]] = None  # v0.3 opt-in
 
     def __post_init__(self) -> None:
@@ -129,6 +176,15 @@ class StatsResult:
                     f"decision_rate must equal (valid+invalid)/total; "
                     f"got {self.decision_rate}, expected {expected}"
                 )
+        # v0.4 §7: by_decision keys must be a subset of the three verdicts.
+        # Empty dict is fine (means no timing was aggregated).
+        extra_keys = set(self.by_decision) - _ALLOWED_BY_DECISION_KEYS
+        if extra_keys:
+            raise ValueError(
+                f"by_decision keys must be subset of "
+                f"{sorted(_ALLOWED_BY_DECISION_KEYS)}; "
+                f"got extra keys {sorted(extra_keys)}"
+            )
 
     def to_dict(self) -> Dict[str, Any]:
         d: Dict[str, Any] = {
@@ -139,6 +195,10 @@ class StatsResult:
             "decision_rate": self.decision_rate,
             "reason_breakdown": dict(self.reason_breakdown),
         }
+        if self.by_decision:
+            d["by_decision"] = {
+                k: v.to_dict() for k, v in self.by_decision.items()
+            }
         if self.d_fumt8_breakdown is not None:
             d["d_fumt8_breakdown"] = dict(self.d_fumt8_breakdown)
         return d
