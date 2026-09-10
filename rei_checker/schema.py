@@ -47,6 +47,17 @@ class ReasonCode(str, Enum):
     # UNCLASSIFIED frequency, the fix is to read accumulated details and
     # add new rules to classifyFailure — never assume default is correct.
     UNCLASSIFIED = "UNCLASSIFIED"
+    # v0.5.0a1 (STEP 1945 β-1): Citation stream reason codes.
+    # UNDECIDED-only per spec §1.2 invariant. Citation stream verified/
+    # not_found map to VALID/INVALID (no reason_code, per invariant).
+    # These four codes cover the tool's NEITHER band (peer citation_verify.py
+    # 4 帯 designs) — case drift / punct normalization / paraphrase — plus
+    # fetch failure (unreachable). rei-aios STEP 1945 findings-from-
+    # implementation.md defines the band semantics.
+    CITATION_CASE_DRIFT = "CITATION_CASE_DRIFT"
+    CITATION_PUNCT_NORMALIZATION = "CITATION_PUNCT_NORMALIZATION"
+    CITATION_PARAPHRASE = "CITATION_PARAPHRASE"
+    CITATION_UNREACHABLE = "CITATION_UNREACHABLE"
 
 
 @dataclass(frozen=True)
