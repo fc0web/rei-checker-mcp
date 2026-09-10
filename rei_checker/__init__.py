@@ -15,10 +15,22 @@ v0.3.0a1 (2026-08-24, STEP 1401): pending-lean4-neither-mcp-connector
     D-FUMT₈ internal projection added at ledger layer only (spec §1.3
     preserved: verify() / stats() default surface unchanged, opt-in
     d_fumt8_breakdown via stats(include_d_fumt8=True)).
+v0.4.0a1 (2026-08-26): stats() §7 by_decision timing diagnostic landed
+    (opt-in via stats(include_by_decision=True), spec §1.3 preserved:
+    verify() default surface unchanged; timing p50/p90/p99 grouped by
+    verdict for hardware-substrate diagnostic).
+
+    NOTE (2026-09-11, STEP 1945 refs): version drift discovered —
+    pyproject was already 0.4.0a1 while __init__.__version__ +
+    CHECKER_VERSION lagged at 0.3.0a1, causing every ledger row written
+    under v0.4 code to be marked as v0.3. __init__ synced to pyproject
+    (no version bump). Past ledger rows retain their 0.3.0a1 marker
+    (append-only, no retroactive rewrite; the drift itself is preserved
+    as a diagnostic artifact of the discovery window).
 """
 
-__version__ = "0.3.0a1"
-CHECKER_VERSION = f"rei-checker-mcp/{__version__}+lean-repl-d8-2026-08-24"
+__version__ = "0.4.0a1"
+CHECKER_VERSION = f"rei-checker-mcp/{__version__}+by-decision-drift-fix-2026-09-11"
 
 from rei_checker.schema import (
     Verdict,
