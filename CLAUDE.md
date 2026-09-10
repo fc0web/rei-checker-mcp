@@ -181,3 +181,60 @@ mapping table は `rei_checker/d_fumt8.py` の docstring + `spec_table()` で �
 - **Rei stack MCP 8 systems** (rei-aios v2.8.1 tool 38 + benchtop v0.6 tool 17 + mcp-lens + rei-automator-mcp + lab-notebook-mcp + rei-verify + rei-memory-mcp + rei-meta-mcp) = 全て 別 domain、 本 repo は 9th system として parallel 配置予定 (実運用で 硬化後、 藤本さん judgment)。
 
 本 repo は **spec CHECKER_SPEC_v0.md** に **strictly** 従い、 上記 8 system と **意図的に 独立**。 統合は spec §5 「複数バックエンド対応 非目標」 に反するため 現時点 なし。
+
+---
+
+## §14 Citation stream (v0.5.0a1 β-1)
+
+**追加日**: 2026-09-11 (STEP 1945 β-1 実装)
+**Consumed by**: rei-aios sidecar `data/tabs/rei-aios-ab/reflection-checker/skeleton/citation_verify.py`
+
+### 位置付け
+
+Citation stream = **散文引用実在照合** stream。 Lean 4 定理 verify stream (既存) と 別 domain、 別 stream。 rei-aios 側 で 実 fetch + 4 帯 substring match を 実施、 本 repo 側 は **`citation_adapter`** で Body 3 値 Verdict + reason_code 畳込み のみ 提供 (spec §1.3 遵守)。
+
+### Spec §1.2 遵守 の 実現 (reason_code invariant)
+
+Citation stream 内部 4 band を Body Verdict + reason_code に 畳込む 時、 spec §1.2 invariant (「reason_code は UNDECIDED でのみ 許可」) を **必ず 保持**:
+
+| Citation 内部 band | → | Body Verdict | reason_code |
+|---|---|---|---|
+| `verified` (band 1: 空白正規化のみ で 一致) | → | VALID | None |
+| `casefold_neither` (band 2a: 大小ゆれ) | → | UNDECIDED | CITATION_CASE_DRIFT |
+| `punct_neither` (band 2b: NFKC + 約物除去 で 一致) | → | UNDECIDED | CITATION_PUNCT_NORMALIZATION |
+| `paraphrase_neither` (band 2c: token 重複 ≥ 0.60) | → | UNDECIDED | CITATION_PARAPHRASE |
+| `not_found` (band 3: どの正規化 でも 不一致) | → | INVALID | None |
+| `unreachable` (band 0: HTTP/network 失敗) | → | UNDECIDED | CITATION_UNREACHABLE |
+
+### Spec §1.3 遵守 の 実現 (Verdict 4 値化 禁止)
+
+- API 境界 で は Verdict 3 値 (VALID/INVALID/UNDECIDED) のみ 露出
+- Citation stream 内部 4 band 情報 は reason_code 側 で **完全復元可能** (`ALL_CITATION_VERDICTS` frozenset)
+- 呼出者 (rei-aios sidecar) は `to_body_verdict(citation_verdict)` で 6 帯 → 3 値 + optional reason_code 変換
+
+### repair_action mapping (修正機器 中心仮説 連動)
+
+`reason_code_to_repair_action(reason_code)` = 「なぜ 却下 か」 → 「次 の 一手」 変換。 chat-Claude via 藤本さん relay の 中心仮説 「修正効率 = 1 回 の 却下 の 情報量」 の operational base:
+
+| reason_code | repair_action |
+|---|---|
+| CITATION_CASE_DRIFT | REWRITE_QUOTE_TO_SOURCE_CASING |
+| CITATION_PUNCT_NORMALIZATION | NORMALIZE_PUNCTUATION |
+| CITATION_PARAPHRASE | QUOTE_VERBATIM_SPAN |
+| CITATION_UNREACHABLE | REPLACE_SOURCE_URL |
+| その他 (TIMEOUT / MISSING_AXIOM 等) | None (citation stream 外) |
+
+### Ledger marker (checker_version)
+
+- v0.5.0a1 由来 row: `rei-checker-mcp/0.5.0a1+citation-stream-beta1-2026-09-11`
+- v0.4.0a1 由来 row (§7 by_decision + drift fix): `rei-checker-mcp/0.4.0a1+by-decision-drift-fix-2026-09-11`
+- 過去 v0.3.0a1 marker rows: 保存 (append-only、 retroactive 変更なし、 STEP 1917 corrigendum pattern 継承)
+- rei-aios ingest 由来 (citation stream): `citation-verify/v0.1+<date>` (rei-aios sidecar 側 marker)
+
+### 導入 evidence (rei-aios STEP 1945)
+
+- rei-aios sidecar 5 fixture 実測 (peer `citation_verify.py`): miss_rate=0.0 / NEITHER_recall=1.0 / coord_density=0.9375 / TCB=393 loc
+- vs baseline-A (naive WebSearch): miss_rate=1.0 (3/3 fake fixture 見逃し) = 決定的差
+- vs baseline-B (Claude Haiku 4.5 fresh session): miss_rate=0.667 (F04 paraphrase + F05 case-drift verified 誤答) = model-size sensitivity 実測
+- criteria.verdict = MOSTLY_PASSED (2 arm PASS + 1 arm HELD 完全独立 provider 待機)
+- 詳細: rei-aios `data/tabs/rei-aios-ab/reflection-checker/judgment-4-baseline-measurement.md`

@@ -72,14 +72,17 @@ class TestSchema(unittest.TestCase):
         self.assertEqual(Verdict.INVALID.value, "INVALID")
         self.assertEqual(Verdict.UNDECIDED.value, "UNDECIDED")
 
-    def test_reason_code_has_seven_values(self):
-        # Spec §1.2 initial set + §6 D11 (V02_PROTOCOL.md, v0.2) widen with
-        # UNCLASSIFIED. Enum widening is forward-compatible — existing
-        # ledger rows with old 6-code set remain valid.
+    def test_reason_code_has_eleven_values(self):
+        # Spec §1.2 initial 6 + §6 D11 (V02_PROTOCOL.md, v0.2) UNCLASSIFIED
+        # + v0.5.0a1 (STEP 1945 β-1) 4 CITATION_* UNDECIDED-only codes.
+        # Enum widening is forward-compatible — existing ledger rows with
+        # old code sets remain valid.
         expected = {
             "TIMEOUT", "PARSE_FAILURE", "UNSUPPORTED_SYNTAX",
             "MISSING_AXIOM", "DEPTH_LIMIT", "OUT_OF_SCOPE",
             "UNCLASSIFIED",
+            "CITATION_CASE_DRIFT", "CITATION_PUNCT_NORMALIZATION",
+            "CITATION_PARAPHRASE", "CITATION_UNREACHABLE",
         }
         self.assertEqual(
             {r.value for r in ReasonCode},
