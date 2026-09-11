@@ -27,7 +27,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterator, Optional, List
 
-from rei_checker.schema import LedgerEntry, Verdict, ReasonCode
+from rei_checker.schema import LedgerEntry, Verdict, ReasonCode, CoherenceMark
 
 
 DEFAULT_LEDGER_FILENAME = "ledger.jsonl"
@@ -105,6 +105,15 @@ def read_all_entries(
                     if d.get("reason_code") is not None
                     else None
                 )
+                # v0.6 (STEP 1989): coherence field optional (backward compat
+                # with pre-v0.6 rows that lack it). Parse camelCase sub-object
+                # back to Python CoherenceMark; forward-compat with unknown keys.
+                coherence_raw = d.get("coherence")
+                coherence = (
+                    CoherenceMark.from_jsonl_dict(coherence_raw)
+                    if isinstance(coherence_raw, dict)
+                    else None
+                )
                 entries.append(
                     LedgerEntry(
                         ts_utc=d["ts_utc"],
@@ -116,6 +125,7 @@ def read_all_entries(
                         # v0.3: d_fumt8 field optional (backward compat
                         # with pre-v0.3 rows that lack it).
                         d_fumt8=d.get("d_fumt8"),
+                        coherence=coherence,
                     )
                 )
             except (json.JSONDecodeError, KeyError, ValueError) as e:

@@ -27,6 +27,16 @@ v0.4.0a1 (2026-08-26): stats() §7 by_decision timing diagnostic landed
     (no version bump). Past ledger rows retain their 0.3.0a1 marker
     (append-only, no retroactive rewrite; the drift itself is preserved
     as a diagnostic artifact of the discovery window).
+v0.6.0a1 (2026-09-12, STEP 1989): Coherence emission for multi-rollout tracking.
+    Defer arc (γ''') pickup from rei-aios ECC audit arc close (2026-09-12).
+    New CoherenceMark dataclass + LedgerEntry.coherence optional field emit
+    JSONL sub-object with camelCase keys matching rei-aios consumer interface
+    (src/mcp/d8-ledger-query.ts::CoherenceMark, STEP 1973). Callers who
+    orchestrate multi-rollout runs (ensemble / recursion / live-promotion
+    gate) supply the mark at append time; verify() alone cannot compute it.
+    Spec §1.3 preserved (ledger-only, not exposed at API surface). Backward
+    compat: pre-v0.6 rows lack the field, both read and write remain valid.
+
 v0.5.0a1 (2026-09-11, STEP 1945 β-1 implementation): Citation stream adapter.
     4-band internal citation verdict (verified / casefold NEITHER / punct
     NEITHER / paraphrase NEITHER / not_found / unreachable) collapses to
@@ -42,8 +52,8 @@ v0.5.0a1 (2026-09-11, STEP 1945 β-1 implementation): Citation stream adapter.
     rejection; per-band reason codes make that density explicit.
 """
 
-__version__ = "0.5.0a1"
-CHECKER_VERSION = f"rei-checker-mcp/{__version__}+citation-stream-beta1-2026-09-11"
+__version__ = "0.6.0a1"
+CHECKER_VERSION = f"rei-checker-mcp/{__version__}+coherence-emission-2026-09-12"
 
 from rei_checker.schema import (
     Verdict,
@@ -51,6 +61,7 @@ from rei_checker.schema import (
     VerifyResult,
     StatsResult,
     LedgerEntry,
+    CoherenceMark,
 )
 from rei_checker.citation_adapter import (
     BodyVerdictWithReason,
@@ -73,6 +84,7 @@ __all__ = [
     "VerifyResult",
     "StatsResult",
     "LedgerEntry",
+    "CoherenceMark",
     "BodyVerdictWithReason",
     "to_body_verdict",
     "reason_code_to_repair_action",

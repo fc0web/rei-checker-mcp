@@ -1,6 +1,6 @@
 # rei-checker-mcp
 
-**形式検証チェッカー MCP v0.3.0a1** — 一行を受け取り、真偽を返す。 それ以上でも それ以下でもない。
+**形式検証チェッカー MCP v0.6.0a1** — 一行を受け取り、真偽を返す。 それ以上でも それ以下でもない。 (v0.6 additions: CoherenceMark for multi-rollout coherence emission, STEP 1989 defer arc (γ''') from rei-aios ECC audit; v0.5 = citation stream adapter; v0.4 = §7 by_decision timing diagnostic; v0.3 = LeanBackend Stage 1 + D-FUMT₈ ledger projection.)
 
 Three-valued verdict (`VALID` / `INVALID` / `UNDECIDED`). No LLM in the judgment path. Every UNDECIDED carries a reason code and lands in an append-only refutation ledger.
 

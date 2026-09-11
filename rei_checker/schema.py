@@ -216,6 +216,93 @@ class StatsResult:
 
 
 @dataclass(frozen=True)
+class CoherenceMark:
+    """v0.6 addition: multi-rollout coherence signal for cross-verify tracking.
+
+    STEP 1989 (2026-09-12) — defer arc (γ''') from rei-aios ECC audit arc close.
+
+    Rei-aios `d8-ledger-query` (STEP 1973) already consumes `coherence`
+    on read (forward-compatible optional field). This dataclass is the
+    matching *emitter* on the checker side. Consumer type spec:
+    `src/mcp/d8-ledger-query.ts::CoherenceMark`.
+
+    All 5 fields are optional (any subset may be provided). The field is
+    a *cross-rollout* signal — verify() alone cannot compute it. Callers
+    who orchestrate multi-rollout runs (an ensemble, a re-verification
+    cycle, a live-promotion gate) supply the mark at ledger append time.
+
+    Serialization: JSONL uses camelCase keys to match the rei-aios
+    consumer interface exactly. Python attributes are snake_case for
+    PEP-8 consistency with sister fields.
+
+    Spec §1.3 preserved: not exposed at VerifyResult / stats() surface —
+    ledger annotation only.
+    """
+
+    # Ensemble result matches prior accepted winner (identity across parallel rollouts).
+    ensemble_match: Optional[bool] = None
+    # Recursive/repeated rollout result matches prior winner.
+    recursive_match: Optional[bool] = None
+    # Latest single rollout matches prior winner.
+    latest_match: Optional[bool] = None
+    # Promotion gate passed for live action (feeds livePromotionRate stat).
+    live_promoted: Optional[bool] = None
+    # Free-form short cause code (e.g. "freshness_gate_fail").
+    reason_code: Optional[str] = None
+
+    def to_jsonl_dict(self) -> Dict[str, Any]:
+        """Emit camelCase to match rei-aios `CoherenceMark` interface.
+
+        Only fields that were explicitly set are emitted (omit-None
+        semantics) — keeps ledger rows minimal and preserves the
+        "unknown vs known-false" distinction on the reader side.
+        """
+        d: Dict[str, Any] = {}
+        if self.ensemble_match is not None:
+            d["ensembleMatch"] = self.ensemble_match
+        if self.recursive_match is not None:
+            d["recursiveMatch"] = self.recursive_match
+        if self.latest_match is not None:
+            d["latestMatch"] = self.latest_match
+        if self.live_promoted is not None:
+            d["livePromoted"] = self.live_promoted
+        if self.reason_code is not None:
+            d["reasonCode"] = self.reason_code
+        return d
+
+    def is_empty(self) -> bool:
+        """True iff no field is set (nothing to emit)."""
+        return (
+            self.ensemble_match is None
+            and self.recursive_match is None
+            and self.latest_match is None
+            and self.live_promoted is None
+            and self.reason_code is None
+        )
+
+    @classmethod
+    def from_jsonl_dict(cls, d: Dict[str, Any]) -> "CoherenceMark":
+        """Parse from a read JSONL sub-object (camelCase keys).
+
+        Unknown keys are ignored (forward compat with future field additions
+        on the rei-aios consumer side). Wrong types silently produce None
+        (v0.6 initial policy — strict mode is a future defer).
+        """
+        def _b(k: str) -> Optional[bool]:
+            v = d.get(k)
+            return v if isinstance(v, bool) else None
+
+        rc = d.get("reasonCode")
+        return cls(
+            ensemble_match=_b("ensembleMatch"),
+            recursive_match=_b("recursiveMatch"),
+            latest_match=_b("latestMatch"),
+            live_promoted=_b("livePromoted"),
+            reason_code=rc if isinstance(rc, str) else None,
+        )
+
+
+@dataclass(frozen=True)
 class LedgerEntry:
     """One row of the refutation ledger. Spec §4.
 
@@ -228,6 +315,12 @@ class LedgerEntry:
     preserved: this field is ledger-only, NOT exposed in VerifyResult /
     stats() decision_rate. See rei_checker/d_fumt8.py for the mapping.
     Old ledger rows without this field remain readable (backward compat).
+
+    v0.6 addition (STEP 1989, defer arc (γ''')): optional `coherence`
+    field stores a CoherenceMark for multi-rollout coherence tracking.
+    Emitted as JSON sub-object with camelCase keys to match the rei-aios
+    consumer (`src/mcp/d8-ledger-query.ts::CoherenceMark`). Spec §1.3
+    preserved: ledger-only, not exposed at API surface.
     """
 
     ts_utc: str  # ISO 8601 UTC, e.g. "2026-08-22T10:15:30Z"
@@ -237,13 +330,15 @@ class LedgerEntry:
     elapsed_ms: int
     reason_code: Optional[ReasonCode] = None
     d_fumt8: Optional[str] = None  # v0.3: D-FUMT₈ name, ledger-only (spec §1.3)
+    coherence: Optional[CoherenceMark] = None  # v0.6 (STEP 1989): cross-rollout signal
 
     def to_jsonl_dict(self) -> Dict[str, Any]:
         """Serialize to dict for JSONL writing.
 
         Field order kept stable for grep-ability. reason_code omitted for
         VALID/INVALID rows. d_fumt8 emitted only when present (backward
-        compat with pre-v0.3 rows).
+        compat with pre-v0.3 rows). coherence emitted only when present
+        and non-empty (backward compat with pre-v0.6 rows).
         """
         d: Dict[str, Any] = {
             "ts_utc": self.ts_utc,
@@ -256,4 +351,6 @@ class LedgerEntry:
             d["reason_code"] = self.reason_code.value
         if self.d_fumt8 is not None:
             d["d_fumt8"] = self.d_fumt8
+        if self.coherence is not None and not self.coherence.is_empty():
+            d["coherence"] = self.coherence.to_jsonl_dict()
         return d
